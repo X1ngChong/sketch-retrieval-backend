@@ -24,11 +24,18 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -301,5 +308,36 @@ public class FileController {
             }
         }
         return uniqueFileNames;
+    }
+
+    /**
+     * 获取可用的地图文件列表
+     * @param type 文件类型：weiguan(微观) 或 zhongguan(中观)
+     * @return 文件名列表（不含.zip扩展名）
+     */
+    @GetMapping("/list")
+    public ResponseData<List<String>> getFileList(@RequestParam(defaultValue = "weiguan") String type) {
+        try {
+            // 使用 ClassPathResource 读取 classpath 下的文件
+            String pattern = "classpath:data/" + type + "/*.zip";
+            ResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+            Resource[] resources = resolver.getResources(pattern);
+            
+            List<String> fileNames = new ArrayList<>();
+            
+            for (Resource resource : resources) {
+                String filename = resource.getFilename();
+                if (filename != null && filename.endsWith(".zip")) {
+                    // 去掉.zip扩展名
+                    fileNames.add(filename.substring(0, filename.length() - 4));
+                }
+            }
+            
+            log.info("获取文件列表 [{}]: {}", type, fileNames);
+            return ResponseData.succeed(fileNames);
+        } catch (Exception e) {
+            log.error("获取文件列表失败: {}", e.getMessage());
+            return ResponseData.failed("获取文件列表失败: " + e.getMessage());
+        }
     }
 }
