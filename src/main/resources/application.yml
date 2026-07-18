@@ -1,0 +1,17 @@
+server:
+  port: 9090
+  tomcat:
+    connection-timeout: 30000
+spring:
+  data:
+    redis:
+      #host: 47.122.72.106
+      port: 6379
+      host: localhost
+      password: 123456
+  neo4j:
+    #uri: neo4j://47.122.72.106:7687
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: 198234bh

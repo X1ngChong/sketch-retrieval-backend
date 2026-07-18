@@ -1,0 +1,189 @@
+package com.bhui.Util.Next_TO.autoNextTo;
+
+import org.locationtech.jts.linearref.LengthIndexedLine;
+import org.neo4j.driver.*;
+import org.locationtech.jts.geom.*;
+import org.locationtech.jts.io.WKTReader;
+import org.neo4j.driver.Record;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+import static org.neo4j.driver.Values.parameters;
+
+public class AddOrderListInNextToRelation {
+    private static String GroupLabel;
+    private static String BuildLabel;
+    private static String RoadLabel;
+
+    /**
+     * 根据传入的参数更新 NEXT_TO 关系中的投影信息
+     *
+     * @param url      Neo4j数据库的URL
+     * @param username 数据库用户名
+     * @param password 数据库密码
+     * @param labelName 节点标签前缀（如 "xianlin"）
+     */
+    public static void updateOrderList(String url, String username, String password, String labelName,String roadLabel) {
+        GroupLabel = labelName + "Group"; // 设置组节点标签
+        BuildLabel = labelName + "Build"; // 设置建筑节点标签
+        RoadLabel = roadLabel; // 设置道路节点标签
+
+        // 创建 Neo4j 驱动
+        try (Driver driver = GraphDatabase.driver(url, AuthTokens.basic(username, password))) {
+            String getRelationList = "MATCH p=(s:" + GroupLabel + ")-[r:NEXT_TO]->(e:" + GroupLabel + ") RETURN id(s) as s, id(e) as e, id(r) as r, r.roadId as roadId";
+            List<List<Integer>> ids = new ArrayList<>(); // 填充需要的id列表
+
+            try (Session session = driver.session()) {
+                Result result = session.run(getRelationList);
+                while (result.hasNext()) {
+                    List<Integer> temp = new ArrayList<>();
+                    Record record = result.next();
+                    Integer sId = record.get("s").asInt();
+                    Integer rId = record.get("r").asInt();
+                    Integer roadId = record.get("roadId").asInt();
+
+                    temp.add(sId);
+                    temp.add(rId);
+                    temp.add(roadId);
+
+                    ids.add(temp); // 暂存进最终结果
+                }
+            }
+
+            System.out.println("-----------数组填充完毕---------------------");
+            for (List<Integer> finalList : ids) {
+                if (finalList.get(2) != 0) {
+                    // 查询地物数据
+                    String featureQuery = "MATCH (g:" + GroupLabel + ")-[r:Contain]->(f:" + BuildLabel + ") WHERE id(g) = " + finalList.get(0) +
+                            " RETURN id(g) AS groupId, id(f) AS featureId, f.geometry AS geometry, type(r) AS relationship";
+                    // 查询道路数据
+                    String roadQuery = "MATCH (r:" + RoadLabel + ") WHERE id(r) = " + finalList.get(2) + " RETURN r.geometry AS geometry";
+                    //System.out.println(roadQuery);
+
+                    // 使用 JTS 解析 WKT
+                    GeometryFactory geometryFactory = new GeometryFactory();
+                    WKTReader wktReader = new WKTReader(geometryFactory);
+
+                    // 查询道路
+                    MultiLineString road = null;
+                    try (Session session = driver.session()) {
+                        road = session.readTransaction(tx -> {
+                            Result result = tx.run(roadQuery);
+                            String wkt = result.single().get("geometry").asString();
+                            try {
+                                return (MultiLineString) wktReader.read(wkt); // 修改为 MultiLineString
+                            } catch (Exception e) {
+                                throw new RuntimeException("Failed to parse road geometry: " + wkt, e);
+                            }
+                        });
+                    }
+
+                    // 查询地物
+                    List<FeatureProjection> featureProjections = new ArrayList<>();
+                    try (Session session = driver.session()) {
+                        MultiLineString finalRoad = road;
+                        session.readTransaction(tx -> {
+                            Result result = tx.run(featureQuery);
+                            while (result.hasNext()) {
+                                Record record = result.next();
+                                Integer id = record.get("featureId").asInt();
+                                String wkt = record.get("geometry").asString();
+                                try {
+                                    Geometry geometry = wktReader.read(wkt);
+
+                                    // 检查几何类型
+                                    Point featurePoint;
+                                    if (geometry instanceof Point) {
+                                        featurePoint = (Point) geometry;
+                                    } else if (geometry instanceof MultiPolygon || geometry instanceof Polygon) {
+                                        featurePoint = geometry.getCentroid(); // 提取中心点
+                                    } else {
+                                        throw new RuntimeException("Unsupported geometry type: " + geometry.getGeometryType());
+                                    }
+
+                                    // 计算投影点
+                                    Coordinate closestProjection = null;
+                                    double minDistance = Double.MAX_VALUE;
+                                    double projectionIndex = -1;
+
+                                    for (int i = 0; i < finalRoad.getNumGeometries(); i++) {
+                                        LineString lineString = (LineString) finalRoad.getGeometryN(i);
+
+                                        // 使用 LengthIndexedLine 计算投影点
+                                        LengthIndexedLine indexedLine = new LengthIndexedLine(lineString);
+                                        double index = indexedLine.project(featurePoint.getCoordinate());
+                                        Coordinate projectedCoordinate = indexedLine.extractPoint(index);
+
+                                        // 计算投影点到地物的距离
+                                        double distance = featurePoint.getCoordinate().distance(projectedCoordinate);
+                                        if (distance < minDistance) {
+                                            minDistance = distance;
+                                            closestProjection = projectedCoordinate;
+                                            projectionIndex = index;
+                                        }
+                                    }
+
+                                    // 保存地物的投影信息
+                                    featureProjections.add(new FeatureProjection(id, closestProjection, projectionIndex, minDistance));
+                                } catch (Exception e) {
+                                    throw new RuntimeException("Failed to parse feature geometry: " + wkt, e);
+                                }
+                            }
+                            return null;
+                        });
+                    }
+
+                    // 按投影点的索引排序
+                    featureProjections.sort(Comparator.comparingDouble(FeatureProjection::getProjectionIndex));
+
+                    // 输出排序结果
+                    List<Integer> orderList = new ArrayList<>();
+                    System.out.println("投影最终结果:");
+                    for (FeatureProjection projection : featureProjections) {
+                        orderList.add(projection.getId()); // 添加到最终结果集中
+                    }
+
+                    changeOrderList(driver.session(), finalList.get(1), orderList); // 将排序好的投影存储到关系上
+                }
+            }
+        }
+    }
+
+    public static void changeOrderList(Session session, Integer idr, List<Integer> orderList) {
+        session.run("MATCH p=()-[r:NEXT_TO]->() WHERE id(r) = $idr SET r.orderList = $orderList", parameters("idr", idr, "orderList", orderList));
+        System.out.println("修改成功");
+    }
+
+    // 定义一个类来保存地物的投影信息
+    static class FeatureProjection {
+        private final Integer id;
+        private final Coordinate projection;
+        private final double projectionIndex;
+        private final double distance;
+
+        public FeatureProjection(Integer id, Coordinate projection, double projectionIndex, double distance) {
+            this.id = id;
+            this.projection = projection;
+            this.projectionIndex = projectionIndex;
+            this.distance = distance;
+        }
+
+        public Integer getId() {
+            return id;
+        }
+
+        public Coordinate getProjection() {
+            return projection;
+        }
+
+        public double getProjectionIndex() {
+            return projectionIndex;
+        }
+
+        public double getDistance() {
+            return distance;
+        }
+    }
+}
