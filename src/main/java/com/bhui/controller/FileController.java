@@ -19,16 +19,26 @@ import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Session;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
+
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -49,6 +59,42 @@ public class FileController {
     @Value("${spring.neo4j.authentication.password}")
     private String neo4jPassword;
 
+    // 文件上传目录
+    private static final String UPLOAD_DIR = "D:/download/file/upload/";
+
+    /**
+     * 文件上传接口 - 保存上传的文件到本地
+     * @param file 上传的文件
+     * @return 文件本地路径
+     */
+    @PostMapping("/upload")
+    public ResponseData<String> uploadFile(@RequestParam("file") MultipartFile file) {
+        try {
+            // 确保上传目录存在
+            Files.createDirectories(Paths.get(UPLOAD_DIR));
+
+            // 生成唯一文件名，保留原始扩展名
+            String originalFilename = file.getOriginalFilename();
+            String extension = "";
+            if (originalFilename != null && originalFilename.contains(".")) {
+                extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+            }
+            String savedFilename = UUID.randomUUID().toString().replace("-", "") + extension;
+
+            // 保存文件到本地
+            Path targetPath = Paths.get(UPLOAD_DIR, savedFilename);
+            file.transferTo(targetPath.toFile());
+
+            log.info("文件上传成功: {}", targetPath);
+
+            // 返回本地文件路径（供 initNeo4j 使用）
+            return ResponseData.succeed(targetPath.toString());
+        } catch (IOException e) {
+            log.error("文件上传失败: {}", e.getMessage());
+            return ResponseData.failed("文件上传失败: " + e.getMessage());
+        }
+    }
+
     /**
      *
      * @param request
@@ -58,8 +104,11 @@ public class FileController {
     @PostMapping("/initNeo4j")
     public ResponseData<String> initNeo4j(@RequestBody Map<String, String> request, @RequestParam String index ) {
         String fileUrl = request.get("fileUrl");
-        System.out.println(fileUrl);
-        String fileName = fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
+        log.info("initNeo4j fileUrl: {}", fileUrl);
+        String fileName = fileUrl.substring(fileUrl.lastIndexOf("/") + 1).replace("\\", "/");
+        if (fileName.contains("/")) {
+            fileName = fileName.substring(fileName.lastIndexOf("/") + 1);
+        }
         String path = "D:/download/file/test/";
         String localFilePath = "D:/download/file/test/" + fileName;
 
@@ -68,8 +117,14 @@ public class FileController {
             // 确保目录存在
             Files.createDirectories(Paths.get(path));
 
-            // 下载文件到本地
-            FileDownloader.downloadFile(fileUrl, localFilePath);
+            // 判断是本地路径还是远程URL
+            if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+                // 远程URL，下载文件到本地
+                FileDownloader.downloadFile(fileUrl, localFilePath);
+            } else {
+                // 本地路径，直接复制文件
+                Files.copy(Paths.get(fileUrl), Paths.get(localFilePath));
+            }
 
             // 解压文件到本地
             String unzipDir = path+"unzipped/"+fileName.split("_")[0]; // 修改为适当的路径
@@ -253,5 +308,36 @@ public class FileController {
             }
         }
         return uniqueFileNames;
+    }
+
+    /**
+     * 获取可用的地图文件列表
+     * @param type 文件类型：weiguan(微观) 或 zhongguan(中观)
+     * @return 文件名列表（不含.zip扩展名）
+     */
+    @GetMapping("/list")
+    public ResponseData<List<String>> getFileList(@RequestParam(defaultValue = "weiguan") String type) {
+        try {
+            // 使用 ClassPathResource 读取 classpath 下的文件
+            String pattern = "classpath:data/" + type + "/*.zip";
+            ResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+            Resource[] resources = resolver.getResources(pattern);
+            
+            List<String> fileNames = new ArrayList<>();
+            
+            for (Resource resource : resources) {
+                String filename = resource.getFilename();
+                if (filename != null && filename.endsWith(".zip")) {
+                    // 去掉.zip扩展名
+                    fileNames.add(filename.substring(0, filename.length() - 4));
+                }
+            }
+            
+            log.info("获取文件列表 [{}]: {}", type, fileNames);
+            return ResponseData.succeed(fileNames);
+        } catch (Exception e) {
+            log.error("获取文件列表失败: {}", e.getMessage());
+            return ResponseData.failed("获取文件列表失败: " + e.getMessage());
+        }
     }
 }
