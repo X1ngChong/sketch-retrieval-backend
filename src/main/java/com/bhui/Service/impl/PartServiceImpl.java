@@ -502,7 +502,7 @@ public class PartServiceImpl implements PartService {
             List<Integer> path2 = Arrays.asList(finalResultByMatrix.get(i));
 
             //TODO：这边需要加上整体的相似度再次进行计算
-            double overAllSim = value.get(i);
+            double overAllSim = (value != null && i < value.size()) ? value.get(i) : 0.0;
 
             double avg1 = getAvg(getArray(path1, path2, partSim1Map,length));
             double avg2 = getAvg(getArray(path1, path2, partSim2Map,length));

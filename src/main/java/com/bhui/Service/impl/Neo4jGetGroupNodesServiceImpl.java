@@ -31,7 +31,14 @@ public class Neo4jGetGroupNodesServiceImpl implements Neo4jGetGroupNodesService 
                             Result result = tx.run(cypherQuery);
                             while (result.hasNext()) {
                                 Record record = result.next();
-                                tempList.add("'" + record.get("osmID").asString() + "'"); // 正确地将 osmID 添加到 tempList
+                                // OSMID 可能是 String 或 Integer 类型，兼容处理
+                                String osmIdStr;
+                                try {
+                                    osmIdStr = record.get("osmID").asString();
+                                } catch (Exception e) {
+                                    osmIdStr = String.valueOf(record.get("osmID").asInt());
+                                }
+                                tempList.add("'" + osmIdStr + "'");
                                 //[155438410, 155438043, 8006, 8005, 871590011, 871600929, 871600928, 871600927, 871600926, 871600925, 871600924, 8007, 8004, 871600937, 871600933, 871600930, 525942922, 871600936, 871600935, 871600934, 871600932, 871600931, 871600922, 583447630]
                                 //["'460504071'", "'8001'", "'8005'"]
                                 //["'"155438410"'", "'"155438043"'", "'"8006"'", "'"8005"'", "'"871590011"'", "'"871600929"'", "'"871600928"'", "'"871600927"'", "'"871600926"'", "'"871600925"'", "'"871600924"'", "'"8007"'", "'"8004"'", "'"871600937"'", "'"871600933"'", "'"871600930"'", "'"525942922"'", "'"871600936"'", "'"871600935"'", "'"871600934"'", "'"871600932"'", "'"871600931"'", "'"871600922"'", "'"583447630"'"]
